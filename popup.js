@@ -9,37 +9,44 @@ const UNIVERSAL_G = 0.1;
 // Rigid Body Physics Parameters
 const MASS = 1.0;
 const SIZE = 16;
-// Moment of inertia for a square box: I = (1/6) * m * s^2
 const INERTIA = (1 / 6) * MASS * SIZE * SIZE; 
-const RESTITUTION = 0.15; // Bounce elasticity (landing leg shock absorption)
-const FRICTION = 0.55;    // Surface friction on moon ground
-const MAX_SAFE_IMPACT = 2.4; // Impact velocity threshold before crushing
+const RESTITUTION = 0.15; 
+const FRICTION = 0.55;    
+const MAX_SAFE_IMPACT = 2.4; 
 
 const THRUST_POWER = 0.08; 
-const RCS_TORQUE = 0.018;  // Angular torque applied by RCS thrusters
+const RCS_TORQUE = 0.018;  
 
-// --- ENTITIES ---
+// --- SINGLE MOON WITH SPHERE OF INFLUENCE ---
 const moon = {
+    name: "Luna",
     x: WIDTH / 2,
     y: HEIGHT / 2,
     radius: 40,
-    mass: 40 * 40 
+    soiRadius: 40 * 2.6, // Shrunk by ~42%, scales proportionally based on radius
+    mass: 40 * 40,
+    color: '#888',
+    soiColor: 'rgba(200, 200, 200, 0.08)',
+    soiBorder: 'rgba(200, 200, 200, 0.4)'
 };
 
-// Corner offsets in local rocket coordinates (Center of Mass at 0,0)
-const cornersLocal = [
-    { x: -SIZE / 2, y: -SIZE / 2 }, // Rear Left
-    { x:  SIZE / 2, y: -SIZE / 2 }, // Front Left
-    { x:  SIZE / 2, y:  SIZE / 2 }, // Front Right
-    { x: -SIZE / 2, y:  SIZE / 2 }  // Rear Right
-];
-
+// Landing zone attached to the bottom of the moon
 const landingZone = {
     angle: Math.PI / 2, 
     width: 0.4,         
     height: 15
 };
 
+// Box Corner Offsets for Rigid Collision Solver
+const cornersLocal = [
+    { x: -SIZE / 2, y: -SIZE / 2 }, 
+    { x:  SIZE / 2, y: -SIZE / 2 }, 
+    { x:  SIZE / 2, y:  SIZE / 2 }, 
+    { x: -SIZE / 2, y:  SIZE / 2 }  
+];
+
+// Variables declared in correct order to prevent initialization errors
+let visualTrajectory = []; 
 let rocket = resetRocket();
 let keys = { a: false, d: false, s: false };
 let startTime = Date.now();
@@ -70,9 +77,10 @@ window.addEventListener('keyup', (e) => {
 });
 
 function resetRocket() {
+    visualTrajectory = [];
     return {
-        x: WIDTH / 2,
-        y: (HEIGHT / 2) - moon.radius - 12, 
+        x: moon.x,
+        y: moon.y - moon.radius - 12, 
         vx: 0, 
         vy: 0,
         angle: -Math.PI / 2, 
@@ -85,55 +93,56 @@ function resetRocket() {
 function update() {
     if (gameState !== 'playing') return;
 
-    // 1. Center of Mass Gravitational Attraction
+    // 1. Gravitational Attraction within Sphere of Influence (SOI)
     const dx = moon.x - rocket.x;
     const dy = moon.y - rocket.y;
     const distanceSq = dx * dx + dy * dy;
     const distance = Math.sqrt(distanceSq);
-    
-    const gravityForce = (UNIVERSAL_G * moon.mass) / distanceSq;
-    rocket.vx += (dx / distance) * gravityForce;
-    rocket.vy += (dy / distance) * gravityForce;
 
-    // 2. Applied Forces & Torque (Thrust/RCS)
+    if (distance <= moon.soiRadius) {
+        const gravityForce = (UNIVERSAL_G * moon.mass) / distanceSq;
+        rocket.vx += (dx / distance) * gravityForce;
+        rocket.vy += (dy / distance) * gravityForce;
+    }
+
+    // 2. Thrust & Torque Controls
     const forwardX = Math.cos(rocket.angle);
     const forwardY = Math.sin(rocket.angle);
 
     if (keys.s) {
-        // Linear thrust through Center of Mass (no torque)
         rocket.vx += (forwardX * THRUST_POWER) / MASS;
         rocket.vy += (forwardY * THRUST_POWER) / MASS;
     }
     if (keys.a) {
-        // Torque: Angular Acceleration α = Torque / Inertia
         rocket.angularVelocity -= RCS_TORQUE / INERTIA; 
     }
     if (keys.d) {
         rocket.angularVelocity += RCS_TORQUE / INERTIA; 
     }
 
-    // Rotational damping in space (slight stability stabilization)
+    // Rotational damping in space
     rocket.angularVelocity *= 0.998;
 
-    // 3. Integrate Motion
+    // 3. Motion Integration
     rocket.angle += rocket.angularVelocity;
     rocket.x += rocket.vx;
     rocket.y += rocket.vy;
 
-    // 4. Rigid Body Collision & Reaction Physics
+    // 4. Rigid Body Collision Resolution
     resolveRigidCollisions();
+
+    // 5. Update Smoothed Visual Trajectory Line
+    updateSmoothedTrajectory();
 }
 
-// --- IMPULSE-BASED RIGID BODY COLLISION ---
+// --- IMPULSE RIGID BODY COLLISION SOLVER ---
 function resolveRigidCollisions() {
     const cosA = Math.cos(rocket.angle);
     const sinA = Math.sin(rocket.angle);
-
     let activeContacts = [];
 
-    // Test all 4 corners of the rocket box against moon surface
+    // Test rocket corners against moon surface
     for (let c of cornersLocal) {
-        // Rotate corner offset to world space relative to Center of Mass
         const rx = c.x * cosA - c.y * sinA;
         const ry = c.x * sinA + c.y * cosA;
 
@@ -144,58 +153,45 @@ function resolveRigidCollisions() {
         const dy = worldY - moon.y;
         const dist = Math.sqrt(dx * dx + dy * dy);
 
-        // Check penetration with moon sphere
         if (dist < moon.radius) {
-            const nx = dx / dist; // Outward surface normal
+            const nx = dx / dist; 
             const ny = dy / dist;
             const penetration = moon.radius - dist;
             activeContacts.push({ rx, ry, nx, ny, penetration });
         }
     }
 
-    if (activeContacts.length === 0) {
-        landingTimer = 0;
-    } else {
-        let isLandingZoneContact = false;
-
+    if (activeContacts.length > 0) {
         for (let contact of activeContacts) {
             const { rx, ry, nx, ny, penetration } = contact;
 
-            // Positional correction to eliminate overlap
+            // Positional separation
             rocket.x += nx * (penetration / activeContacts.length);
             rocket.y += ny * (penetration / activeContacts.length);
 
-            // Contact point velocity: V_point = V_com + (ω x r)
+            // Point velocity
             const vpx = rocket.vx - rocket.angularVelocity * ry;
             const vpy = rocket.vy + rocket.angularVelocity * rx;
-
-            // Velocity along normal
             const normalVelocity = vpx * nx + vpy * ny;
 
-            // Only respond if moving into the moon surface
             if (normalVelocity < 0) {
-                // Check crash velocity threshold
                 if (Math.abs(normalVelocity) > MAX_SAFE_IMPACT) {
                     gameState = 'crashed';
                     return;
                 }
 
-                // Normal Impulse scalar calculation (2D Impulse Solver)
-                // 2D Cross product scalar: r x n = rx * ny - ry * nx
+                // Normal Impulse
                 const rCrossN = rx * ny - ry * nx;
                 const invMassSum = (1 / MASS) + (rCrossN * rCrossN) / INERTIA;
                 const jNormal = -(1 + RESTITUTION) * normalVelocity / invMassSum;
 
-                // Apply Normal Impulse to Linear and Angular Velocities
                 rocket.vx += (jNormal * nx) / MASS;
                 rocket.vy += (jNormal * ny) / MASS;
                 rocket.angularVelocity += (rCrossN * jNormal) / INERTIA;
 
-                // Re-calculate point velocity after normal impulse for friction
+                // Friction Impulse
                 const vpxNew = rocket.vx - rocket.angularVelocity * ry;
                 const vpyNew = rocket.vy + rocket.angularVelocity * rx;
-
-                // Friction Impulse (Tangent Vector)
                 const tx = -ny;
                 const ty = nx;
                 const tangentVelocity = vpxNew * tx + vpyNew * ty;
@@ -203,29 +199,25 @@ function resolveRigidCollisions() {
                 const invMassSumT = (1 / MASS) + (rCrossT * rCrossT) / INERTIA;
 
                 let jTangent = -tangentVelocity / invMassSumT;
-
-                // Clamp friction to Coulomb Friction limit (|F_f| <= μ * F_n)
                 const maxFriction = FRICTION * jNormal;
                 jTangent = Math.max(-maxFriction, Math.min(maxFriction, jTangent));
 
-                // Apply Friction Impulse
                 rocket.vx += (jTangent * tx) / MASS;
                 rocket.vy += (jTangent * ty) / MASS;
                 rocket.angularVelocity += (rCrossT * jTangent) / INERTIA;
             }
         }
 
-        // --- LANDING EVALUATION ---
+        // --- LANDING VERIFICATION ---
         const angleToRocket = Math.atan2(rocket.y - moon.y, rocket.x - moon.x);
         let tiltDifference = Math.abs((rocket.angle % (Math.PI * 2)) - angleToRocket);
         if (tiltDifference > Math.PI) tiltDifference = (Math.PI * 2) - tiltDifference;
 
         const currentSpeed = Math.sqrt(rocket.vx * rocket.vx + rocket.vy * rocket.vy);
         const isInLandingZone = Math.abs(angleToRocket - landingZone.angle) < landingZone.width;
-        const isUpright = tiltDifference < 0.6; // ~34 degrees max tilt
+        const isUpright = tiltDifference < 0.6;
         const isStable = currentSpeed < 0.4 && Math.abs(rocket.angularVelocity) < 0.05;
 
-        // If rocket tipped over completely onto its side while touching moon, crash it
         if (tiltDifference > 1.35) {
             gameState = 'crashed';
             return;
@@ -244,6 +236,8 @@ function resolveRigidCollisions() {
         } else {
             landingTimer = 0;
         }
+    } else {
+        landingTimer = 0;
     }
 
     // Out of bounds screen safe boundary
@@ -252,26 +246,127 @@ function resolveRigidCollisions() {
     }
 }
 
+// --- TRAJECTORY PREDICTION & SMOOTHING ---
+function predictTargetTrajectory() {
+    const rawPoints = [];
+    let simX = rocket.x;
+    let simY = rocket.y;
+    let simVx = rocket.vx;
+    let simVy = rocket.vy;
+    let simAngle = rocket.angle;
+    let simAngVel = rocket.angularVelocity;
+    
+    // Prediction steps increased to 600 for a 5x longer line
+    const PREDICT_STEPS = 600;
+    
+    for (let i = 0; i < PREDICT_STEPS; i++) {
+        const dx = moon.x - simX;
+        const dy = moon.y - simY;
+        const distanceSq = dx * dx + dy * dy;
+        const distance = Math.sqrt(distanceSq);
+
+        if (distance <= moon.soiRadius) {
+            const gravityForce = (UNIVERSAL_G * moon.mass) / distanceSq;
+            simVx += (dx / distance) * gravityForce;
+            simVy += (dy / distance) * gravityForce;
+        }
+
+        const forwardX = Math.cos(simAngle);
+        const forwardY = Math.sin(simAngle);
+
+        if (keys.s) {
+            simVx += (forwardX * THRUST_POWER) / MASS;
+            simVy += (forwardY * THRUST_POWER) / MASS;
+        }
+        if (keys.a) {
+            simAngVel -= RCS_TORQUE / INERTIA;
+        }
+        if (keys.d) {
+            simAngVel += RCS_TORQUE / INERTIA;
+        }
+
+        simAngVel *= 0.998;
+
+        simAngle += simAngVel;
+        simX += simVx;
+        simY += simVy;
+
+        rawPoints.push({ x: simX, y: simY });
+
+        if (distance < moon.radius) {
+            break; 
+        }
+    }
+    return rawPoints;
+}
+
+function updateSmoothedTrajectory() {
+    const targetPoints = predictTargetTrajectory();
+    const SMOOTH_FACTOR = 0.12; 
+
+    // Ensure array length matches target size dynamically
+    while (visualTrajectory.length < targetPoints.length) {
+        const lastPt = visualTrajectory.length > 0 
+            ? visualTrajectory[visualTrajectory.length - 1] 
+            : { x: rocket.x, y: rocket.y };
+        visualTrajectory.push({ x: lastPt.x, y: lastPt.y });
+    }
+    if (visualTrajectory.length > targetPoints.length) {
+        visualTrajectory.length = targetPoints.length;
+    }
+
+    // Linearly interpolate (LERP) each point toward the new target prediction
+    for (let i = 0; i < targetPoints.length; i++) {
+        visualTrajectory[i].x += (targetPoints[i].x - visualTrajectory[i].x) * SMOOTH_FACTOR;
+        visualTrajectory[i].y += (targetPoints[i].y - visualTrajectory[i].y) * SMOOTH_FACTOR;
+    }
+}
+
 // --- RENDER ENGINE ---
 function draw() {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    // Draw Moon
+    // 1. Draw See-Through Sphere of Influence (SOI) Circle
+    ctx.beginPath();
+    ctx.arc(moon.x, moon.y, moon.soiRadius, 0, Math.PI * 2);
+    ctx.fillStyle = moon.soiColor;
+    ctx.fill();
+    ctx.strokeStyle = moon.soiBorder;
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([6, 6]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 2. Draw Solid Moon Surface
     ctx.beginPath();
     ctx.arc(moon.x, moon.y, moon.radius, 0, Math.PI * 2);
-    ctx.fillStyle = '#888';
+    ctx.fillStyle = moon.color;
     ctx.fill();
 
-    // Draw Landing Zone
+    // 3. Draw Landing Zone Target Pad
     ctx.save();
     ctx.translate(moon.x, moon.y);
     ctx.rotate(landingZone.angle);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
     ctx.fillRect(moon.radius - 2, -15, 20, 30);
     ctx.restore();
 
-    // Draw Rocket
+    // 4. Draw Smoothed Trajectory Prediction Line
+    if (gameState === 'playing' && visualTrajectory.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(rocket.x, rocket.y);
+        for (let pt of visualTrajectory) {
+            ctx.lineTo(pt.x, pt.y);
+        }
+        ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([3, 5]); // Dotted line pattern
+        ctx.stroke();
+        ctx.setLineDash([]);
+    }
+
+    // 5. Draw Rocket
     ctx.save();
     ctx.translate(rocket.x, rocket.y);
     ctx.rotate(rocket.angle);
@@ -293,7 +388,7 @@ function draw() {
     
     ctx.restore();
 
-    // Draw UI
+    // Draw UI Overlay
     ctx.fillStyle = '#fff';
     ctx.font = '24px monospace';
     ctx.textAlign = 'center';
@@ -315,15 +410,14 @@ function draw() {
         ctx.fillStyle = '#0f0';
         const seconds = Math.floor(finalTime / 1000);
         const ms = String(finalTime % 1000).padStart(3, '0');
-        ctx.fillText(`SUCCESS! Time: ${seconds}.${ms}s`, WIDTH / 2, 40);
+        ctx.fillText( `SUCCESS! Time: ${seconds}.${ms}s`, WIDTH / 2, 40);
     }
-
-    requestAnimationFrame(gameLoop);
 }
 
 function gameLoop() {
     update();
     draw();
+    requestAnimationFrame(gameLoop);
 }
 
 // Start game loop
