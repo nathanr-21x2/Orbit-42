@@ -222,7 +222,7 @@ function resolveRigidCollisions() {
             gameState = 'crashed';
             return;
         }
-
+// commit
         if (isInLandingZone && isUpright && isStable) {
             if (landingTimer === 0) {
                 touchdownTime = Date.now() - startTime;
