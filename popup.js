@@ -1,6 +1,10 @@
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 
+// --- ASSETS ---
+const rocketImg = new Image();
+rocketImg.src = 'Rocket_Orbit-42.png';
+
 // --- GAME CONSTANTS ---
 const WIDTH = 768;
 const HEIGHT = 576;
@@ -8,52 +12,139 @@ const UNIVERSAL_G = 0.1;
 
 // Rigid Body Physics Parameters
 const MASS = 1.0;
-const SIZE = 16;
-const INERTIA = (1 / 6) * MASS * SIZE * SIZE; 
+const ROCKET_L = 24; 
+const ROCKET_W = 12; 
+const INERTIA = ((1 / 12) * MASS * (ROCKET_W * ROCKET_W + ROCKET_L * ROCKET_L)) * 4; 
 const RESTITUTION = 0.15; 
 const FRICTION = 0.55;    
 const MAX_SAFE_IMPACT = 2.4; 
 
 const THRUST_POWER = 0.08; 
-const RCS_TORQUE = 0.018;  
+const RCS_TORQUE = 0.16;
 
-// --- SINGLE MOON WITH SPHERE OF INFLUENCE ---
-const moon = {
-    name: "Luna",
-    x: WIDTH / 2,
-    y: HEIGHT / 2,
-    radius: 40,
-    soiRadius: 40 * 2.6, // Shrunk by ~42%, scales proportionally based on radius
-    mass: 40 * 40,
-    color: '#888',
-    soiColor: 'rgba(200, 200, 200, 0.08)',
-    soiBorder: 'rgba(200, 200, 200, 0.4)'
+// --- CELESTIAL BODY FACTORIES ---
+const MOON_R = 40, MOON_SOI = 40 * 2.6, MOON_MASS = 1600;
+const EARTH_R = 60, EARTH_SOI = MOON_SOI * 1.5, EARTH_MASS = MOON_MASS * 2;
+const MARS_R = 100, MARS_SOI = MOON_SOI * 2.5, MARS_MASS = MOON_MASS * 4;
+
+function createMoon(x, y) {
+    return { name: "Moon", x, y, radius: MOON_R, soiRadius: MOON_SOI, mass: MOON_MASS, color: '#888', soiBorder: 'rgba(200, 200, 200, 0.4)' };
+}
+function createEarth(x, y) {
+    return { name: "Earth", x, y, radius: EARTH_R, soiRadius: EARTH_SOI, mass: EARTH_MASS, color: '#4ba3c3', soiBorder: 'rgba(75, 163, 195, 0.4)' };
+}
+function createMars(x, y) {
+    return { name: "Mars", x, y, radius: MARS_R, soiRadius: MARS_SOI, mass: MARS_MASS, color: '#d90429', soiBorder: 'rgba(217, 4, 41, 0.4)' };
+}
+
+// 1.5x Larger Landing Zone Settings
+const LANDING_ZONE_CONFIG = {
+    width: 0.6,  
+    radius: 30   
 };
 
-// Landing zone attached to the bottom of the moon
-const landingZone = {
-    angle: Math.PI / 2, 
-    width: 0.4,         
-    height: 15
-};
-
-// Box Corner Offsets for Rigid Collision Solver
 const cornersLocal = [
-    { x: -SIZE / 2, y: -SIZE / 2 }, 
-    { x:  SIZE / 2, y: -SIZE / 2 }, 
-    { x:  SIZE / 2, y:  SIZE / 2 }, 
-    { x: -SIZE / 2, y:  SIZE / 2 }  
+    { x: -ROCKET_L / 2, y: -ROCKET_W / 2 }, 
+    { x:  ROCKET_L / 2, y: -ROCKET_W / 2 }, 
+    { x:  ROCKET_L / 2, y:  ROCKET_W / 2 }, 
+    { x: -ROCKET_L / 2, y:  ROCKET_W / 2 }  
 ];
 
-// Variables declared in correct order to prevent initialization errors
+// --- LOCAL STORAGE & PROGRESSION ---
+let unlockedLevels = 10;
+let bestTimes = {};
+let endlessHighScore = 0;
+
+try {
+    bestTimes = JSON.parse(localStorage.getItem('orbit42_times')) || {};
+    endlessHighScore = parseInt(localStorage.getItem('orbit42_endless_high')) || 0;
+} catch (e) {
+    console.warn("LocalStorage unavailable:", e);
+}
+
+function saveProgress() {
+    try {
+        localStorage.setItem('orbit42_unlocked', unlockedLevels);
+        localStorage.setItem('orbit42_times', JSON.stringify(bestTimes));
+        localStorage.setItem('orbit42_endless_high', endlessHighScore);
+    } catch (e) {}
+}
+
+// --- WORLD 1 LEVEL DEFINITIONS ---
+const LEVELS = [
+    {
+        bodies: [createMoon(384, 288)],
+        start: { x: 384, y: 288 - MOON_R - 13, angle: -Math.PI / 2 },
+        targetBody: 0, targetAngle: Math.PI / 2
+    },
+    {
+        bodies: [createMoon(200, 288), createMoon(568, 288)],
+        start: { x: 200 - MOON_R - 13, y: 288, angle: Math.PI },
+        targetBody: 1, targetAngle: 0
+    },
+    {
+        bodies: [createMoon(150, 150), createEarth(580, 380)],
+        start: { x: 150, y: 150 - MOON_R - 13, angle: -Math.PI / 2 },
+        targetBody: 1, targetAngle: Math.PI / 2
+    },
+    {
+        bodies: [createEarth(180, 288), createEarth(588, 288)],
+        start: { x: 180 - EARTH_R - 13, y: 288, angle: Math.PI },
+        targetBody: 1, targetAngle: 0
+    },
+    {
+        bodies: [createMoon(200, 180), createMars(550, 380)],
+        start: { x: 200, y: 180 - MOON_R - 13, angle: -Math.PI / 2 },
+        targetBody: 1, targetAngle: Math.PI / 2
+    },
+    {
+        bodies: [createEarth(180, 288), createMars(550, 288)],
+        start: { x: 180 - EARTH_R - 13, y: 288, angle: Math.PI },
+        targetBody: 1, targetAngle: 0
+    },
+    {
+        bodies: [createMoon(120, 120), createEarth(384, 288), createMars(720, 50)],
+        start: { x: 120, y: 120 + MOON_R + 13, angle: Math.PI / 2 },
+        targetBody: 2, targetAngle: (3 * Math.PI) / 4
+    },
+    {
+        bodies: [createEarth(0, 288), createMars(384, 28), createMars(384, 548), createMoon(768, 288)],
+        start: { x: EARTH_R + 13, y: 288, angle: 0 },
+        targetBody: 3, targetAngle: Math.PI
+    },
+    {
+        bodies: [createMars(0, 288), createMars(500, 288)],
+        start: { x: MARS_R + 13, y: 288, angle: 0 },
+        targetBody: 1, targetAngle: 0
+    },
+    {
+        bodies: [createMars(0, 288), createMoon(384, 100), createMoon(384, 288), createMoon(384, 476), createMars(768, 288)],
+        start: { x: MARS_R + 13, y: 288, angle: 0 },
+        targetBody: 4, targetAngle: Math.PI
+    }
+];
+
+// --- STATE VARIABLES ---
+let currentLevelIdx = 0;
+let currentBodies = [];
+let targetLanding = { bodyIndex: 0, angle: 0 };
+
 let visualTrajectory = []; 
-let rocket = resetRocket();
+let rocket = { x: 0, y: 0, vx: 0, vy: 0, angle: 0, angularVelocity: 0 };
 let keys = { a: false, d: false, s: false };
-let startTime = Date.now();
+let startTime = 0;
 let landingTimer = 0;
 let touchdownTime = 0; 
 let finalTime = 0;     
-let gameState = 'playing'; 
+let lastTime = performance.now();
+
+// Endless Mode Specifics
+let endlessBodies = [];
+let endlessScore = 0;
+let cameraX = 0;
+let nextPlanetX = 0;
+
+let gameState = 'main_menu'; 
 
 // --- INPUT HANDLING ---
 window.addEventListener('keydown', (e) => {
@@ -61,215 +152,361 @@ window.addEventListener('keydown', (e) => {
     if (e.key.toLowerCase() === 'd') keys.d = true;
     if (e.key.toLowerCase() === 's') keys.s = true;
     
-    if (e.key === ' ' && gameState !== 'playing') {
-        rocket = resetRocket();
-        startTime = Date.now();
-        landingTimer = 0;
-        touchdownTime = 0;
-        finalTime = 0;
-        gameState = 'playing';
+    if (e.key === ' ') {
+        if (gameState === 'won' && currentLevelIdx + 1 < LEVELS.length) {
+            startLevel(currentLevelIdx + 1);
+        } else if (gameState === 'crashed') {
+            startLevel(currentLevelIdx);
+        } else if (gameState === 'endless_crashed') {
+            startEndlessMode();
+        }
     }
 });
+
 window.addEventListener('keyup', (e) => {
     if (e.key.toLowerCase() === 'a') keys.a = false;
     if (e.key.toLowerCase() === 'd') keys.d = false;
     if (e.key.toLowerCase() === 's') keys.s = false;
 });
 
-function resetRocket() {
-    visualTrajectory = [];
-    return {
-        x: moon.x,
-        y: moon.y - moon.radius - 12, 
-        vx: 0, 
-        vy: 0,
-        angle: -Math.PI / 2, 
-        angularVelocity: 0,
-        size: SIZE
+canvas.addEventListener('click', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+
+    if (gameState === 'main_menu') {
+        if (mx > WIDTH - 130 && mx < WIDTH - 20 && my > 20 && my < 55) {
+            gameState = 'settings';
+        } else if (mx > 0 && mx < WIDTH / 2 && my > HEIGHT / 2 && my < HEIGHT) {
+            gameState = 'level_select';
+        } else if (mx > WIDTH / 2 && mx < WIDTH && my > HEIGHT / 2 && my < HEIGHT) {
+            startEndlessMode();
+        }
+    } 
+    else if (gameState === 'level_select') {
+        if (mx > 20 && mx < 100 && my > 20 && my < 55) {
+            gameState = 'main_menu';
+        } else {
+            const startX = 94, startY = 220, gapX = 116, gapY = 110;
+            for (let i = 0; i < 10; i++) {
+                let col = i % 5, row = Math.floor(i / 5);
+                let bx = startX + col * gapX, by = startY + row * gapY;
+                if (mx > bx && mx < bx + 80 && my > by && my < by + 80) {
+                    if (i + 1 <= unlockedLevels) {
+                        startLevel(i);
+                    }
+                }
+            }
+        }
+    }
+    else if (gameState === 'settings') {
+        if (mx > 20 && mx < 100 && my > 20 && my < 55) {
+            gameState = 'main_menu';
+        }
+    }
+    else if (gameState.startsWith('endless')) {
+        if (mx > 20 && mx < 100 && my > 20 && my < 55) {
+            gameState = 'main_menu';
+        }
+    }
+    else if (gameState === 'playing' || gameState === 'crashed' || gameState === 'won') {
+        if (mx > 20 && mx < 100 && my > 20 && my < 55) {
+            gameState = 'level_select';
+        }
+    }
+});
+
+// --- LEVEL & GAME INIT ---
+function startLevel(idx) {
+    currentLevelIdx = idx;
+    const lvl = LEVELS[idx];
+    currentBodies = lvl.bodies;
+    targetLanding = { bodyIndex: lvl.targetBody, angle: lvl.targetAngle };
+    
+    rocket = {
+        x: lvl.start.x,
+        y: lvl.start.y,
+        vx: 0, vy: 0,
+        angle: lvl.start.angle,
+        angularVelocity: 0
     };
+    visualTrajectory = [];
+    startTime = Date.now();
+    landingTimer = 0;
+    touchdownTime = 0;
+    finalTime = 0;
+    gameState = 'playing';
+}
+
+function startEndlessMode() {
+    const startBoxWidth = WIDTH / 5;
+    endlessBodies = [];
+    endlessScore = 0;
+    cameraX = 0;
+    nextPlanetX = startBoxWidth + 384;
+
+    rocket = {
+        x: startBoxWidth + 12,
+        y: HEIGHT / 2,
+        vx: 0, vy: 0,
+        angle: 0,
+        angularVelocity: 0
+    };
+    visualTrajectory = [];
+    gameState = 'endless_playing';
+}
+
+function generateEndlessPlanets() {
+    while (nextPlanetX < cameraX + WIDTH + 500) {
+        const rand = Math.random();
+        let p;
+        if (rand < 0.4) {
+            const minY = MOON_R / 2, maxY = HEIGHT - MOON_R / 2;
+            p = createMoon(nextPlanetX, minY + Math.random() * (maxY - minY));
+        } else if (rand < 0.75) {
+            const minY = EARTH_R / 2, maxY = HEIGHT - EARTH_R / 2;
+            p = createEarth(nextPlanetX, minY + Math.random() * (maxY - minY));
+        } else {
+            const minY = MARS_R / 2, maxY = HEIGHT - MARS_R / 2;
+            p = createMars(nextPlanetX, minY + Math.random() * (maxY - minY));
+        }
+        p.passed = false;
+        endlessBodies.push(p);
+        nextPlanetX += 384; 
+    }
 }
 
 // --- PHYSICS ENGINE ---
-function update() {
-    if (gameState !== 'playing') return;
+function update(dt) {
+    if (gameState !== 'playing' && gameState !== 'endless_playing') return;
 
-    // 1. Gravitational Attraction within Sphere of Influence (SOI)
-    const dx = moon.x - rocket.x;
-    const dy = moon.y - rocket.y;
-    const distanceSq = dx * dx + dy * dy;
-    const distance = Math.sqrt(distanceSq);
+    const activeBodies = gameState === 'endless_playing' ? endlessBodies : currentBodies;
 
-    if (distance <= moon.soiRadius) {
-        const gravityForce = (UNIVERSAL_G * moon.mass) / distanceSq;
-        rocket.vx += (dx / distance) * gravityForce;
-        rocket.vy += (dy / distance) * gravityForce;
+    // 1. Multi-Body Gravity
+    for (let body of activeBodies) {
+        const dx = body.x - rocket.x;
+        const dy = body.y - rocket.y;
+        const distanceSq = dx * dx + dy * dy;
+        const distance = Math.sqrt(distanceSq);
+
+        if (distance <= body.soiRadius) {
+            const gravityForce = ((UNIVERSAL_G * body.mass) / distanceSq) * dt;
+            rocket.vx += (dx / distance) * gravityForce;
+            rocket.vy += (dy / distance) * gravityForce;
+        }
     }
 
-    // 2. Thrust & Torque Controls
+    // 2. Thrust & RCS Controls
     const forwardX = Math.cos(rocket.angle);
     const forwardY = Math.sin(rocket.angle);
 
     if (keys.s) {
-        rocket.vx += (forwardX * THRUST_POWER) / MASS;
-        rocket.vy += (forwardY * THRUST_POWER) / MASS;
+        rocket.vx += (forwardX * THRUST_POWER * dt) / MASS;
+        rocket.vy += (forwardY * THRUST_POWER * dt) / MASS;
     }
     if (keys.a) {
-        rocket.angularVelocity -= RCS_TORQUE / INERTIA; 
+        rocket.angularVelocity -= (RCS_TORQUE * dt) / INERTIA; 
     }
     if (keys.d) {
-        rocket.angularVelocity += RCS_TORQUE / INERTIA; 
+        rocket.angularVelocity += (RCS_TORQUE * dt) / INERTIA; 
     }
 
-    // Rotational damping in space
-    rocket.angularVelocity *= 0.998;
+    // 3. Integration
+    rocket.angle += rocket.angularVelocity * dt;
+    rocket.x += rocket.vx * dt;
+    rocket.y += rocket.vy * dt;
 
-    // 3. Motion Integration
-    rocket.angle += rocket.angularVelocity;
-    rocket.x += rocket.vx;
-    rocket.y += rocket.vy;
+    // 4. Resolve Surface Dynamics
+    resolveRigidCollisions(dt);
 
-    // 4. Rigid Body Collision Resolution
-    resolveRigidCollisions();
-
-    // 5. Update Smoothed Visual Trajectory Line
-    updateSmoothedTrajectory();
+    if (gameState === 'endless_playing') {
+        updateEndlessMode(dt);
+    }
+    
+    updateSmoothedTrajectory(activeBodies);
 }
 
-// --- IMPULSE RIGID BODY COLLISION SOLVER ---
-function resolveRigidCollisions() {
+function resolveRigidCollisions(dt) {
     const cosA = Math.cos(rocket.angle);
     const sinA = Math.sin(rocket.angle);
-    let activeContacts = [];
+    const activeBodies = gameState.startsWith('endless') ? endlessBodies : currentBodies;
 
-    // Test rocket corners against moon surface
-    for (let c of cornersLocal) {
-        const rx = c.x * cosA - c.y * sinA;
-        const ry = c.x * sinA + c.y * cosA;
+    for (let bIdx = 0; bIdx < activeBodies.length; bIdx++) {
+        const body = activeBodies[bIdx];
+        let activeContacts = [];
 
-        const worldX = rocket.x + rx;
-        const worldY = rocket.y + ry;
+        for (let c of cornersLocal) {
+            const rx = c.x * cosA - c.y * sinA;
+            const ry = c.x * sinA + c.y * cosA;
+            const worldX = rocket.x + rx;
+            const worldY = rocket.y + ry;
 
-        const dx = worldX - moon.x;
-        const dy = worldY - moon.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
+            const dx = worldX - body.x;
+            const dy = worldY - body.y;
+            const dist = Math.sqrt(dx * dx + dy * dy);
 
-        if (dist < moon.radius) {
-            const nx = dx / dist; 
-            const ny = dy / dist;
-            const penetration = moon.radius - dist;
-            activeContacts.push({ rx, ry, nx, ny, penetration });
+            if (dist < body.radius) {
+                const nx = dx / dist; 
+                const ny = dy / dist;
+                const penetration = body.radius - dist;
+                activeContacts.push({ rx, ry, nx, ny, penetration });
+            }
         }
-    }
 
-    if (activeContacts.length > 0) {
-        for (let contact of activeContacts) {
-            const { rx, ry, nx, ny, penetration } = contact;
+        if (activeContacts.length > 0) {
+            for (let contact of activeContacts) {
+                const { rx, ry, nx, ny, penetration } = contact;
+                rocket.x += nx * (penetration / activeContacts.length);
+                rocket.y += ny * (penetration / activeContacts.length);
 
-            // Positional separation
-            rocket.x += nx * (penetration / activeContacts.length);
-            rocket.y += ny * (penetration / activeContacts.length);
+                const vpx = rocket.vx - rocket.angularVelocity * ry;
+                const vpy = rocket.vy + rocket.angularVelocity * rx;
+                const normalVelocity = vpx * nx + vpy * ny;
 
-            // Point velocity
-            const vpx = rocket.vx - rocket.angularVelocity * ry;
-            const vpy = rocket.vy + rocket.angularVelocity * rx;
-            const normalVelocity = vpx * nx + vpy * ny;
+                if (normalVelocity < 0) {
+                    // Only crash on extreme high-speed crashes in standard level mode
+                    if (gameState === 'playing' && Math.abs(normalVelocity) > MAX_SAFE_IMPACT) {
+                        gameState = 'crashed';
+                        return;
+                    }
 
-            if (normalVelocity < 0) {
-                if (Math.abs(normalVelocity) > MAX_SAFE_IMPACT) {
+                    const rCrossN = rx * ny - ry * nx;
+                    const invMassSum = (1 / MASS) + (rCrossN * rCrossN) / INERTIA;
+                    const jNormal = -(1 + RESTITUTION) * normalVelocity / invMassSum;
+
+                    rocket.vx += (jNormal * nx) / MASS;
+                    rocket.vy += (jNormal * ny) / MASS;
+                    rocket.angularVelocity += (rCrossN * jNormal) / INERTIA;
+
+                    const vpxNew = rocket.vx - rocket.angularVelocity * ry;
+                    const vpyNew = rocket.vy + rocket.angularVelocity * rx;
+                    const tx = -ny, ty = nx;
+                    const tangentVelocity = vpxNew * tx + vpyNew * ty;
+                    const rCrossT = rx * ty - ry * tx;
+                    const invMassSumT = (1 / MASS) + (rCrossT * rCrossT) / INERTIA;
+
+                    let jTangent = -tangentVelocity / invMassSumT;
+                    const maxFriction = FRICTION * jNormal;
+                    jTangent = Math.max(-maxFriction, Math.min(maxFriction, jTangent));
+
+                    rocket.vx += (jTangent * tx) / MASS;
+                    rocket.vy += (jTangent * ty) / MASS;
+                    rocket.angularVelocity += (rCrossT * jTangent) / INERTIA;
+                }
+            }
+
+            // --- CURVATURE TILT & SAFE LANDING ---
+            const angleToRocket = Math.atan2(rocket.y - body.y, rocket.x - body.x);
+            
+            let normRocketAngle = rocket.angle % (Math.PI * 2);
+            if (normRocketAngle < 0) normRocketAngle += Math.PI * 2;
+            
+            let normToRocket = angleToRocket % (Math.PI * 2);
+            if (normToRocket < 0) normToRocket += Math.PI * 2;
+            
+            let tiltDiff = Math.abs(normRocketAngle - normToRocket);
+            if (tiltDiff > Math.PI) tiltDiff = (Math.PI * 2) - tiltDiff;
+
+            if (gameState === 'playing') {
+                if (tiltDiff > 1.35) {
                     gameState = 'crashed';
                     return;
                 }
 
-                // Normal Impulse
-                const rCrossN = rx * ny - ry * nx;
-                const invMassSum = (1 / MASS) + (rCrossN * rCrossN) / INERTIA;
-                const jNormal = -(1 + RESTITUTION) * normalVelocity / invMassSum;
+                if (bIdx === targetLanding.bodyIndex) {
+                    let zoneDiff = Math.abs(normToRocket - ((targetLanding.angle % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2)));
+                    if (zoneDiff > Math.PI) zoneDiff = (Math.PI * 2) - zoneDiff;
 
-                rocket.vx += (jNormal * nx) / MASS;
-                rocket.vy += (jNormal * ny) / MASS;
-                rocket.angularVelocity += (rCrossN * jNormal) / INERTIA;
+                    const currentSpeed = Math.sqrt(rocket.vx * rocket.vx + rocket.vy * rocket.vy);
+                    const isInZone = zoneDiff < LANDING_ZONE_CONFIG.width;
+                    const isUpright = tiltDiff < 0.6;
+                    const isStable = currentSpeed < 0.4 && Math.abs(rocket.angularVelocity) < 0.05;
 
-                // Friction Impulse
-                const vpxNew = rocket.vx - rocket.angularVelocity * ry;
-                const vpyNew = rocket.vy + rocket.angularVelocity * rx;
-                const tx = -ny;
-                const ty = nx;
-                const tangentVelocity = vpxNew * tx + vpyNew * ty;
-                const rCrossT = rx * ty - ry * tx;
-                const invMassSumT = (1 / MASS) + (rCrossT * rCrossT) / INERTIA;
+                    if (isInZone && isUpright && isStable) {
+                        if (landingTimer === 0) touchdownTime = Date.now() - startTime;
+                        landingTimer += dt * (1000 / 60);
 
-                let jTangent = -tangentVelocity / invMassSumT;
-                const maxFriction = FRICTION * jNormal;
-                jTangent = Math.max(-maxFriction, Math.min(maxFriction, jTangent));
-
-                rocket.vx += (jTangent * tx) / MASS;
-                rocket.vy += (jTangent * ty) / MASS;
-                rocket.angularVelocity += (rCrossT * jTangent) / INERTIA;
+                        if (landingTimer >= 3000) {
+                            gameState = 'won';
+                            finalTime = touchdownTime;
+                            
+                            if (!bestTimes[currentLevelIdx + 1] || finalTime < bestTimes[currentLevelIdx + 1]) {
+                                bestTimes[currentLevelIdx + 1] = finalTime;
+                            }
+                            if (currentLevelIdx + 2 > unlockedLevels && currentLevelIdx + 1 < LEVELS.length) {
+                                unlockedLevels = currentLevelIdx + 2;
+                            }
+                            saveProgress();
+                        }
+                    } else {
+                        landingTimer = 0;
+                    }
+                } else {
+                    landingTimer = 0;
+                }
             }
         }
-
-        // --- LANDING VERIFICATION ---
-        const angleToRocket = Math.atan2(rocket.y - moon.y, rocket.x - moon.x);
-        let tiltDifference = Math.abs((rocket.angle % (Math.PI * 2)) - angleToRocket);
-        if (tiltDifference > Math.PI) tiltDifference = (Math.PI * 2) - tiltDifference;
-
-        const currentSpeed = Math.sqrt(rocket.vx * rocket.vx + rocket.vy * rocket.vy);
-        const isInLandingZone = Math.abs(angleToRocket - landingZone.angle) < landingZone.width;
-        const isUpright = tiltDifference < 0.6;
-        const isStable = currentSpeed < 0.4 && Math.abs(rocket.angularVelocity) < 0.05;
-
-        if (tiltDifference > 1.35) {
-            gameState = 'crashed';
-            return;
-        }
-// commit
-        if (isInLandingZone && isUpright && isStable) {
-            if (landingTimer === 0) {
-                touchdownTime = Date.now() - startTime;
-            }
-            landingTimer += 1000 / 60;
-
-            if (landingTimer >= 3000 && gameState === 'playing') {
-                gameState = 'won';
-                finalTime = touchdownTime;
-            }
-        } else {
-            landingTimer = 0;
-        }
-    } else {
-        landingTimer = 0;
     }
 
-    // Out of bounds screen safe boundary
-    if (rocket.x < -100 || rocket.x > WIDTH + 100 || rocket.y < -100 || rocket.y > HEIGHT + 100) {
-        gameState = 'crashed';
+    if (gameState === 'playing') {
+        if (rocket.x < -100 || rocket.x > WIDTH + 100 || rocket.y < -100 || rocket.y > HEIGHT + 100) {
+            gameState = 'crashed';
+        }
     }
 }
 
-// --- TRAJECTORY PREDICTION & SMOOTHING ---
-function predictTargetTrajectory() {
+function updateEndlessMode(dt) {
+    cameraX = Math.max(0, rocket.x - 200);
+    generateEndlessPlanets();
+
+    for (let body of endlessBodies) {
+        if (!body.passed && rocket.x > body.x + body.radius) {
+            body.passed = true;
+            endlessScore++;
+            if (endlessScore > endlessHighScore) {
+                endlessHighScore = endlessScore;
+                saveProgress();
+            }
+        }
+    }
+
+    // Only fail in endless if you drift extremely far off top/bottom screen
+    if (rocket.y < -400 || rocket.y > HEIGHT + 400) {
+        gameState = 'endless_crashed';
+    }
+}
+
+// --- TRAJECTORY PREDICTION ---
+function predictTargetTrajectory(activeBodies) {
     const rawPoints = [];
-    let simX = rocket.x;
-    let simY = rocket.y;
-    let simVx = rocket.vx;
-    let simVy = rocket.vy;
-    let simAngle = rocket.angle;
-    let simAngVel = rocket.angularVelocity;
+    let simX = rocket.x, simY = rocket.y;
+    let simVx = rocket.vx, simVy = rocket.vy;
+    let simAngle = rocket.angle, simAngVel = rocket.angularVelocity;
     
-    // Prediction steps increased to 600 for a 5x longer line
     const PREDICT_STEPS = 600;
     
     for (let i = 0; i < PREDICT_STEPS; i++) {
-        const dx = moon.x - simX;
-        const dy = moon.y - simY;
-        const distanceSq = dx * dx + dy * dy;
-        const distance = Math.sqrt(distanceSq);
+        let hitSurface = false;
 
-        if (distance <= moon.soiRadius) {
-            const gravityForce = (UNIVERSAL_G * moon.mass) / distanceSq;
-            simVx += (dx / distance) * gravityForce;
-            simVy += (dy / distance) * gravityForce;
+        for (let body of activeBodies) {
+            const dx = body.x - simX;
+            const dy = body.y - simY;
+            const distanceSq = dx * dx + dy * dy;
+            const distance = Math.sqrt(distanceSq);
+
+            if (distance < body.radius) {
+                hitSurface = true;
+                break;
+            }
+
+            if (distance <= body.soiRadius) {
+                const gravityForce = (UNIVERSAL_G * body.mass) / distanceSq;
+                simVx += (dx / distance) * gravityForce;
+                simVy += (dy / distance) * gravityForce;
+            }
         }
+
+        if (hitSurface) break;
 
         const forwardX = Math.cos(simAngle);
         const forwardY = Math.sin(simAngle);
@@ -278,48 +515,47 @@ function predictTargetTrajectory() {
             simVx += (forwardX * THRUST_POWER) / MASS;
             simVy += (forwardY * THRUST_POWER) / MASS;
         }
-        if (keys.a) {
-            simAngVel -= RCS_TORQUE / INERTIA;
-        }
-        if (keys.d) {
-            simAngVel += RCS_TORQUE / INERTIA;
-        }
-
-        simAngVel *= 0.998;
+        if (keys.a) simAngVel -= RCS_TORQUE / INERTIA;
+        if (keys.d) simAngVel += RCS_TORQUE / INERTIA;
 
         simAngle += simAngVel;
         simX += simVx;
         simY += simVy;
 
         rawPoints.push({ x: simX, y: simY });
-
-        if (distance < moon.radius) {
-            break; 
-        }
     }
     return rawPoints;
 }
 
-function updateSmoothedTrajectory() {
-    const targetPoints = predictTargetTrajectory();
+function updateSmoothedTrajectory(activeBodies) {
+    const targetPoints = predictTargetTrajectory(activeBodies);
     const SMOOTH_FACTOR = 0.12; 
 
-    // Ensure array length matches target size dynamically
     while (visualTrajectory.length < targetPoints.length) {
-        const lastPt = visualTrajectory.length > 0 
-            ? visualTrajectory[visualTrajectory.length - 1] 
-            : { x: rocket.x, y: rocket.y };
+        const lastPt = visualTrajectory.length > 0 ? visualTrajectory[visualTrajectory.length - 1] : { x: rocket.x, y: rocket.y };
         visualTrajectory.push({ x: lastPt.x, y: lastPt.y });
     }
-    if (visualTrajectory.length > targetPoints.length) {
-        visualTrajectory.length = targetPoints.length;
-    }
+    if (visualTrajectory.length > targetPoints.length) visualTrajectory.length = targetPoints.length;
 
-    // Linearly interpolate (LERP) each point toward the new target prediction
     for (let i = 0; i < targetPoints.length; i++) {
         visualTrajectory[i].x += (targetPoints[i].x - visualTrajectory[i].x) * SMOOTH_FACTOR;
         visualTrajectory[i].y += (targetPoints[i].y - visualTrajectory[i].y) * SMOOTH_FACTOR;
     }
+}
+
+// --- UI HELPERS ---
+function drawButton(text, x, y, w, h, bgColor, textColor, font = '18px monospace') {
+    ctx.fillStyle = bgColor;
+    ctx.fillRect(x, y, w, h);
+    ctx.strokeStyle = textColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, y, w, h);
+    
+    ctx.fillStyle = textColor;
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, x + w / 2, y + h / 2);
 }
 
 // --- RENDER ENGINE ---
@@ -327,98 +563,171 @@ function draw() {
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, WIDTH, HEIGHT);
 
-    // 1. Draw See-Through Sphere of Influence (SOI) Circle
-    ctx.beginPath();
-    ctx.arc(moon.x, moon.y, moon.soiRadius, 0, Math.PI * 2);
-    ctx.fillStyle = moon.soiColor;
-    ctx.fill();
-    ctx.strokeStyle = moon.soiBorder;
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([6, 6]);
-    ctx.stroke();
-    ctx.setLineDash([]);
+    if (gameState === 'main_menu') {
+        ctx.fillStyle = '#fff';
+        ctx.font = '64px monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText('Orbit-42', WIDTH / 2, HEIGHT * 0.3);
 
-    // 2. Draw Solid Moon Surface
-    ctx.beginPath();
-    ctx.arc(moon.x, moon.y, moon.radius, 0, Math.PI * 2);
-    ctx.fillStyle = moon.color;
-    ctx.fill();
+        drawButton('Settings', WIDTH - 130, 20, 110, 35, '#222', '#fff');
+        drawButton('Levels', 0, HEIGHT / 2, WIDTH / 2, HEIGHT / 2, '#111', '#fff', '32px monospace');
+        
+        ctx.fillStyle = '#111';
+        ctx.fillRect(WIDTH / 2, HEIGHT / 2, WIDTH / 2, HEIGHT / 2);
+        ctx.strokeStyle = '#fff';
+        ctx.strokeRect(WIDTH / 2, HEIGHT / 2, WIDTH / 2, HEIGHT / 2);
+        ctx.fillStyle = '#fff';
+        ctx.font = '32px monospace';
+        ctx.fillText('Endless', (WIDTH * 3) / 4, HEIGHT / 2 + 100);
+        ctx.font = '18px monospace';
+        ctx.fillStyle = '#aaa';
+        ctx.fillText(`High Score: ${endlessHighScore}`, (WIDTH * 3) / 4, HEIGHT / 2 + 150);
+        return;
+    }
 
-    // 3. Draw Landing Zone Target Pad
+    if (gameState === 'settings') {
+        drawButton('Back', 20, 20, 80, 35, '#222', '#fff');
+        ctx.fillStyle = '#fff';
+        ctx.font = '48px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('Settings', WIDTH / 2, HEIGHT * 0.3);
+        ctx.font = '24px monospace';
+        ctx.fillText('(Coming Soon)', WIDTH / 2, HEIGHT * 0.5);
+        return;
+    }
+
+    if (gameState === 'level_select') {
+        drawButton('Back', 20, 20, 80, 35, '#222', '#fff');
+        ctx.fillStyle = '#fff';
+        ctx.font = '48px monospace';
+        ctx.textAlign = 'center';
+        ctx.fillText('World 1', WIDTH / 2, HEIGHT * 0.15);
+
+        const startX = 94, startY = 220, gapX = 116, gapY = 110;
+
+        for (let i = 0; i < 10; i++) {
+            let col = i % 5, row = Math.floor(i / 5);
+            let bx = startX + col * gapX, by = startY + row * gapY;
+            let levelNum = i + 1;
+            
+            if (levelNum <= unlockedLevels) {
+                drawButton(`#${levelNum}`, bx, by, 80, 80, '#3a8', '#fff', '24px monospace');
+                if (bestTimes[levelNum]) {
+                    ctx.fillStyle = '#dfd';
+                    ctx.font = '12px monospace';
+                    ctx.fillText(`${(bestTimes[levelNum] / 1000).toFixed(1)}s`, bx + 40, by + 62);
+                }
+            } else {
+                drawButton(`#${levelNum}`, bx, by, 80, 80, '#222', '#555', '24px monospace');
+            }
+        }
+        return;
+    }
+
+    // --- IN-GAME RENDERING ---
     ctx.save();
-    ctx.translate(moon.x, moon.y);
-    ctx.rotate(landingZone.angle);
-    ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
-    ctx.fillRect(moon.radius - 2, -15, 20, 30);
-    ctx.restore();
+    if (gameState.startsWith('endless')) {
+        ctx.translate(-cameraX, 0);
 
-    // 4. Draw Smoothed Trajectory Prediction Line
-    if (gameState === 'playing' && visualTrajectory.length > 0) {
+        const startBoxWidth = WIDTH / 5;
+        ctx.fillStyle = '#4ba3c3';
+        ctx.fillRect(0, 0, startBoxWidth, HEIGHT);
+    }
+
+    const activeBodies = gameState.startsWith('endless') ? endlessBodies : currentBodies;
+
+    // 1. Draw Target Landing Zone (Levels only)
+    if (gameState === 'playing' || gameState === 'crashed' || gameState === 'won') {
+        const body = currentBodies[targetLanding.bodyIndex];
+        if (body) {
+            const lzX = body.x + Math.cos(targetLanding.angle) * body.radius;
+            const lzY = body.y + Math.sin(targetLanding.angle) * body.radius;
+            
+            ctx.beginPath();
+            ctx.arc(lzX, lzY, LANDING_ZONE_CONFIG.radius, 0, Math.PI * 2);
+            ctx.fillStyle = 'rgba(127, 178, 133, 0.5)'; 
+            ctx.fill();
+        }
+    }
+
+    // 2. Draw Planetary Bodies & SOIs
+    for (let body of activeBodies) {
+        ctx.beginPath();
+        ctx.arc(body.x, body.y, body.soiRadius, 0, Math.PI * 2);
+        ctx.strokeStyle = body.soiBorder;
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 6]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.beginPath();
+        ctx.arc(body.x, body.y, body.radius, 0, Math.PI * 2);
+        ctx.fillStyle = body.color;
+        ctx.fill();
+    }
+
+    // 3. Trajectory Line
+    if ((gameState === 'playing' || gameState === 'endless_playing') && visualTrajectory.length > 0) {
         ctx.beginPath();
         ctx.moveTo(rocket.x, rocket.y);
-        for (let pt of visualTrajectory) {
-            ctx.lineTo(pt.x, pt.y);
-        }
+        for (let pt of visualTrajectory) ctx.lineTo(pt.x, pt.y);
         ctx.strokeStyle = 'rgba(255, 255, 255, 0.5)';
         ctx.lineWidth = 1.5;
-        ctx.setLineDash([3, 5]); // Dotted line pattern
+        ctx.setLineDash([3, 5]); 
         ctx.stroke();
         ctx.setLineDash([]);
     }
 
-    // 5. Draw Rocket
+    // 4. Rocket Sprite
     ctx.save();
     ctx.translate(rocket.x, rocket.y);
-    ctx.rotate(rocket.angle);
-    
-    ctx.fillStyle = '#ccc';
-    ctx.fillRect(-rocket.size / 2, -rocket.size / 2, rocket.size, rocket.size);
-
-    // Draw Visual Thrust/RCS Flames
-    ctx.fillStyle = '#f90';
-    if (keys.s) { 
-        ctx.fillRect(-rocket.size / 2 - 12, -4, 12, 8);
-    }
-    if (keys.a) { 
-        ctx.fillRect(-rocket.size / 2 - 4, rocket.size / 2, 6, 6);
-    }
-    if (keys.d) { 
-        ctx.fillRect(-rocket.size / 2 - 4, -rocket.size / 2 - 6, 6, 6);
-    }
-    
+    ctx.rotate(rocket.angle + Math.PI / 2);
+    const frameY = (keys.s && (gameState === 'playing' || gameState === 'endless_playing')) ? 16 : 0;
+    ctx.drawImage(rocketImg, 0, frameY, 16, 16, -12, -12, 24, 24);
     ctx.restore();
 
-    // Draw UI Overlay
+    ctx.restore(); 
+
+    // --- OVERLAY UI ---
+    drawButton('Back', 20, 20, 80, 35, '#222', '#fff');
+
     ctx.fillStyle = '#fff';
     ctx.font = '24px monospace';
     ctx.textAlign = 'center';
+    ctx.textBaseline = 'alphabetic';
     
     if (gameState === 'playing') {
         const elapsed = Date.now() - startTime;
-        const seconds = Math.floor(elapsed / 1000);
-        const ms = String(elapsed % 1000).padStart(3, '0');
-        ctx.fillText(`${seconds}.${ms}s`, WIDTH / 2, 40);
-        
+        ctx.fillText(`${(elapsed / 1000).toFixed(2)}s`, WIDTH / 2, 40);
         if (landingTimer > 0) {
             ctx.fillStyle = '#0f0';
-            ctx.fillText(`Verifying: ${(3 - landingTimer/1000).toFixed(1)}s`, WIDTH / 2, 80);
+            ctx.fillText(`Verifying: ${(3 - landingTimer / 1000).toFixed(1)}s`, WIDTH / 2, 80);
         }
     } else if (gameState === 'crashed') {
         ctx.fillStyle = '#f00';
         ctx.fillText('CRASHED! Press Space to Retry', WIDTH / 2, 40);
     } else if (gameState === 'won') {
         ctx.fillStyle = '#0f0';
-        const seconds = Math.floor(finalTime / 1000);
-        const ms = String(finalTime % 1000).padStart(3, '0');
-        ctx.fillText( `SUCCESS! Time: ${seconds}.${ms}s`, WIDTH / 2, 40);
+        ctx.fillText(`SUCCESS! Time: ${(finalTime / 1000).toFixed(2)}s`, WIDTH / 2, 40);
+        ctx.fillText('Press Space for Next Level', WIDTH / 2, 75);
+    } else if (gameState === 'endless_playing') {
+        ctx.fillText(`Score: ${endlessScore}  High: ${endlessHighScore}`, WIDTH / 2, 40);
+    } else if (gameState === 'endless_crashed') {
+        ctx.fillStyle = '#f00';
+        ctx.fillText(`GAME OVER! Score: ${endlessScore}`, WIDTH / 2, 40);
+        ctx.fillText('Press Space to Restart', WIDTH / 2, 75);
     }
 }
 
-function gameLoop() {
-    update();
+function gameLoop(now) {
+    let dt = (now - lastTime) / (1000 / 60);
+    if (isNaN(dt) || dt > 2.0) dt = 1.0;
+    lastTime = now;
+
+    update(dt);
     draw();
     requestAnimationFrame(gameLoop);
 }
 
-// Start game loop
 requestAnimationFrame(gameLoop);
