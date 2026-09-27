@@ -5,6 +5,19 @@ const ctx = canvas.getContext('2d');
 const rocketImg = new Image();
 rocketImg.src = 'Rocket_Orbit-42.png';
 
+const bgStarsImg = new Image();
+// Updated to match your exact file name
+bgStarsImg.src = 'Stars_Orbit-42.avif'; 
+
+const moonImg = new Image();
+moonImg.src = 'Moon_Orbit-42.png';
+
+const earthImg = new Image();
+earthImg.src = 'Earth_Orbit_42.png';
+
+const marsImg = new Image();
+marsImg.src = 'Mars_Orbit-42.png';
+
 // --- GAME CONSTANTS ---
 const WIDTH = 768;
 const HEIGHT = 576;
@@ -28,13 +41,28 @@ const EARTH_R = 60, EARTH_SOI = MOON_SOI * 1.5, EARTH_MASS = MOON_MASS * 2;
 const MARS_R = 100, MARS_SOI = MOON_SOI * 2.5, MARS_MASS = MOON_MASS * 4;
 
 function createMoon(x, y) {
-    return { name: "Moon", x, y, radius: MOON_R, soiRadius: MOON_SOI, mass: MOON_MASS, color: '#888', soiBorder: 'rgba(200, 200, 200, 0.4)' };
+    return { 
+        name: "Moon", x, y, radius: MOON_R, soiRadius: MOON_SOI, mass: MOON_MASS, 
+        color: '#888', 
+        soiBorder: 'rgba(200, 200, 200, 0.85)',
+        soiFill: 'rgba(200, 200, 200, 0.10)' 
+    };
 }
 function createEarth(x, y) {
-    return { name: "Earth", x, y, radius: EARTH_R, soiRadius: EARTH_SOI, mass: EARTH_MASS, color: '#4ba3c3', soiBorder: 'rgba(75, 163, 195, 0.4)' };
+    return { 
+        name: "Earth", x, y, radius: EARTH_R, soiRadius: EARTH_SOI, mass: EARTH_MASS, 
+        color: '#4ba3c3', 
+        soiBorder: 'rgba(75, 163, 195, 0.85)',
+        soiFill: 'rgba(75, 163, 195, 0.10)' 
+    };
 }
 function createMars(x, y) {
-    return { name: "Mars", x, y, radius: MARS_R, soiRadius: MARS_SOI, mass: MARS_MASS, color: '#d90429', soiBorder: 'rgba(217, 4, 41, 0.4)' };
+    return { 
+        name: "Mars", x, y, radius: MARS_R, soiRadius: MARS_SOI, mass: MARS_MASS, 
+        color: '#d90429', 
+        soiBorder: 'rgba(217, 4, 41, 0.85)',
+        soiFill: 'rgba(217, 4, 41, 0.10)' 
+    };
 }
 
 // 1.5x Larger Landing Zone Settings
@@ -364,9 +392,9 @@ function resolveRigidCollisions(dt) {
                 const normalVelocity = vpx * nx + vpy * ny;
 
                 if (normalVelocity < 0) {
-                    // Only crash on extreme high-speed crashes in standard level mode
-                    if (gameState === 'playing' && Math.abs(normalVelocity) > MAX_SAFE_IMPACT) {
-                        gameState = 'crashed';
+                    // Unified Crash Check 1: High-Speed Impact
+                    if (Math.abs(normalVelocity) > MAX_SAFE_IMPACT) {
+                        gameState = gameState === 'playing' ? 'crashed' : 'endless_crashed';
                         return;
                     }
 
@@ -407,12 +435,14 @@ function resolveRigidCollisions(dt) {
             let tiltDiff = Math.abs(normRocketAngle - normToRocket);
             if (tiltDiff > Math.PI) tiltDiff = (Math.PI * 2) - tiltDiff;
 
-            if (gameState === 'playing') {
-                if (tiltDiff > 1.35) {
-                    gameState = 'crashed';
-                    return;
-                }
+            // Unified Crash Check 2: Tipping over
+            if (tiltDiff > 1.35) {
+                gameState = gameState === 'playing' ? 'crashed' : 'endless_crashed';
+                return;
+            }
 
+            // Landing Success Logic (Only applies to levels)
+            if (gameState === 'playing') {
                 if (bIdx === targetLanding.bodyIndex) {
                     let zoneDiff = Math.abs(normToRocket - ((targetLanding.angle % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2)));
                     if (zoneDiff > Math.PI) zoneDiff = (Math.PI * 2) - zoneDiff;
@@ -470,7 +500,6 @@ function updateEndlessMode(dt) {
         }
     }
 
-    // Only fail in endless if you drift extremely far off top/bottom screen
     if (rocket.y < -400 || rocket.y > HEIGHT + 400) {
         gameState = 'endless_crashed';
     }
@@ -558,6 +587,35 @@ function drawButton(text, x, y, w, h, bgColor, textColor, font = '18px monospace
     ctx.fillText(text, x + w / 2, y + h / 2);
 }
 
+function drawBackground(camX, camY) {
+    // Check naturalWidth to ensure the image has actually loaded its data
+    if (!bgStarsImg.complete || bgStarsImg.naturalWidth === 0) return; 
+
+    if (gameState.startsWith('endless')) {
+        const parallaxFactor = 0.2; 
+        const offsetX = (camX * parallaxFactor) % bgStarsImg.width;
+        const offsetY = (camY * parallaxFactor) % bgStarsImg.height;
+
+        for (let x = -offsetX - bgStarsImg.width; x < WIDTH; x += bgStarsImg.width) {
+            for (let y = -offsetY - bgStarsImg.height; y < HEIGHT; y += bgStarsImg.height) {
+                ctx.drawImage(bgStarsImg, x, y);
+            }
+        }
+    } else {
+        ctx.save();
+        ctx.translate(WIDTH / 2, HEIGHT / 2);
+        
+        const rotationSpeed = 0.00003; 
+        ctx.rotate(-Date.now() * rotationSpeed); 
+        
+        const scale = (Math.max(WIDTH, HEIGHT) / bgStarsImg.width) * 2; 
+        ctx.scale(scale, scale);
+        
+        ctx.drawImage(bgStarsImg, -bgStarsImg.width / 2, -bgStarsImg.height / 2);
+        ctx.restore();
+    }
+}
+
 // --- RENDER ENGINE ---
 function draw() {
     ctx.fillStyle = '#000';
@@ -625,6 +683,9 @@ function draw() {
         return;
     }
 
+    // Render Dual-Mode Star Background before translations
+    drawBackground(cameraX, 0);
+
     // --- IN-GAME RENDERING ---
     ctx.save();
     if (gameState.startsWith('endless')) {
@@ -652,7 +713,9 @@ function draw() {
     }
 
     // 2. Draw Planetary Bodies & SOIs
-    for (let body of activeBodies) {
+    for (let i = 0; i < activeBodies.length; i++) {
+        const body = activeBodies[i];
+
         ctx.beginPath();
         ctx.arc(body.x, body.y, body.soiRadius, 0, Math.PI * 2);
         ctx.strokeStyle = body.soiBorder;
@@ -661,10 +724,40 @@ function draw() {
         ctx.stroke();
         ctx.setLineDash([]);
 
-        ctx.beginPath();
-        ctx.arc(body.x, body.y, body.radius, 0, Math.PI * 2);
-        ctx.fillStyle = body.color;
-        ctx.fill();
+        let planetImg;
+        let scaleFactor = 1.0; 
+
+        if (body.name === "Moon") { 
+            planetImg = moonImg;
+            scaleFactor = 1.15; 
+        } else if (body.name === "Earth") { 
+            planetImg = earthImg;
+            scaleFactor = 1.15; 
+        } else if (body.name === "Mars") { 
+            planetImg = marsImg;
+            scaleFactor = 1.0;  
+        }
+
+        // Check naturalWidth to ensure the image actually exists and isn't broken
+        if (planetImg && planetImg.complete && planetImg.naturalWidth > 0) {
+            const drawRadius = body.radius * scaleFactor;
+            // Calculate the intrinsic aspect ratio to prevent stretching
+            const aspect = planetImg.naturalWidth / planetImg.naturalHeight;
+            
+            ctx.drawImage(
+                planetImg, 
+                body.x - (drawRadius * aspect), 
+                body.y - drawRadius, 
+                (drawRadius * 2) * aspect, 
+                drawRadius * 2
+            );
+        } else {
+            // Safe fallback to the colored circle if the image is missing or loading
+            ctx.beginPath();
+            ctx.arc(body.x, body.y, body.radius, 0, Math.PI * 2);
+            ctx.fillStyle = body.color;
+            ctx.fill();
+        }
     }
 
     // 3. Trajectory Line
@@ -683,8 +776,16 @@ function draw() {
     ctx.save();
     ctx.translate(rocket.x, rocket.y);
     ctx.rotate(rocket.angle + Math.PI / 2);
-    const frameY = (keys.s && (gameState === 'playing' || gameState === 'endless_playing')) ? 16 : 0;
-    ctx.drawImage(rocketImg, 0, frameY, 16, 16, -12, -12, 24, 24);
+    
+    // Prevent a game-crashing error by waiting for the image
+    if (rocketImg.complete && rocketImg.naturalWidth > 0) {
+        const frameY = (keys.s && (gameState === 'playing' || gameState === 'endless_playing')) ? 16 : 0;
+        ctx.drawImage(rocketImg, 0, frameY, 16, 16, -12, -12, 24, 24);
+    } else {
+        // Temporary fallback shape so you can still play while it loads
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-6, -12, 12, 24);
+    }
     ctx.restore();
 
     ctx.restore(); 
